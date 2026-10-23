@@ -42,27 +42,75 @@ CLAUDE_MANAGED_ENVIRONMENT_ID=your_environment_id
 PORT=3041
 ```
 
-## How the application was developed
+## How the app was build
 
-The browser collects inputs; the Node host validates requests; the lesson implementation produces observable evidence. The architecture page walks through the real source with numbered steps, prerequisite configuration, source filenames and code excerpts.
+### 1. Bind the action context to a digest
 
-### Lesson implementation
+The action includes the fixed demo principal and tenant, the requested operation and an owned resource. Hashing this object identifies the exact decision context.
 
-[src/lesson.ts](https://github.com/luiscoco/Udemy-claude-managed-agents-lesson-c41-app/blob/main/src/lesson.ts)
+Source: [src/lesson.ts](src/lesson.ts#L13)
 
 ```typescript
-  async run(input) {
-
-const action={principalId:"demo-user",tenantId:"demo",operation:text(input,"operation"),resource:"owned-report"},digest=hash(JSON.stringify(action));
-const available=flag(input,"policyAvailable"),bound=flag(input,"matchingDigest");
-const allowed=available&&bound&&action.operation==="read_report";
-return report(allowed?"passed":"rejected",allowed?"Accepted a scoped policy decision":"Policy unavailable, unbound, or denied",{allowed,actionDigest:digest,policyVersion:available?"local-policy-v1":null,providerConfirmation:"not sent"},["Capture trusted principal and action context","Bind the decision to the exact digest","Deny when unavailable or mismatched","Recheck current state before dispatch"]);
-
-  }
-};
+const action = {
+    principalId: "demo-user",
+    tenantId: "demo",
+    operation: text(input, "operation"),
+    resource: "owned-report",
+  },
+  digest = hash(JSON.stringify(action));
 ```
 
-Read the architecture page for the remaining source excerpts and explanations, including input handling and optional provider behavior. The diagram describes this application, rather than implying that an external integration has been implemented.
+### 2. Fail closed when policy is unavailable or mismatched
+
+The supplied policy must be available, bound to the expected digest and authorize read_report. providerConfirmation stays not sent; the reducer evaluates the decision contract without contacting a policy service.
+
+Source: [src/lesson.ts](src/lesson.ts#L14) · selected statements
+
+```typescript
+const available = flag(input, "policyAvailable"),
+  bound = flag(input, "matchingDigest");
+
+const allowed = available && bound && action.operation === "read_report";
+
+return report(
+  allowed ? "passed" : "rejected",
+  allowed
+    ? "Accepted a scoped policy decision"
+    : "Policy unavailable, unbound, or denied",
+  {
+    allowed,
+    actionDigest: digest,
+    policyVersion: available ? "local-policy-v1" : null,
+    providerConfirmation: "not sent",
+  },
+  [
+    "Capture trusted principal and action context",
+    "Bind the decision to the exact digest",
+    "Deny when unavailable or mismatched",
+    "Recheck current state before dispatch",
+  ],
+);
+```
+
+### Check your understanding
+
+Run **Accept a bound policy decision** in the application. Compare the result with these scenario expectations:
+
+```json
+{
+  "input": {
+    "operation": "read_report",
+    "policyAvailable": true,
+    "matchingDigest": true
+  },
+  "expectedOutcome": "passed",
+  "checkEvidence": {
+    "allowed": true
+  }
+}
+```
+
+Then try **Fail closed on policy outage**. Its expected outcome is `rejected`; identify the condition or evidence field that explains the difference.
 
 ## Validation
 
