@@ -1,0 +1,106 @@
+// External policy adapter teaching example. No requests run at module load.
+import { z } from "zod";
+import { createHash, randomUUID } from "node:crypto";
+import type Anthropic from "@anthropic-ai/sdk";
+const Context = z.strictObject({ principalId: z.string().min(1), tenantId: z.string().min(1),
+  sessionId: z.string().min(1), eventId: z.string().min(1), toolName: z.string().min(1),
+  resourceId: z.string().min(1), input: z.record(z.string(), z.unknown()) });
+export type PolicyRequest = { requestId: string; actionDigest: string; context: z.infer<typeof Context> };
+const PolicyResponse = z.strictObject({ allowed: z.boolean(), reason: z.string().trim().min(1).max(2000),
+  requestId: z.string().min(1), actionDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  policyVersion: z.string().min(1), expiresAt: z.number().int().positive() });
+type Decision = { allowed: boolean; reason: string; policyVersion: string;
+  source: "policy" | "policy_error"; expiresAt: number };
+export type Record = { request: PolicyRequest; state: "pending" | "evaluating" | "decided" |
+  "sending" | "acknowledged" | "uncertain" | "stale"; decision?: Decision };
+// Caller verifies ownership and captures only a canonical tool event with
+// evaluated_permission === "ask". Resolve principal, tenant and resource from
+// authenticated host state, never from model-supplied identity fields.
+export function capture(rawContext: unknown): Record {
+  const context = Context.parse(rawContext);
+  const serialized = JSON.stringify(context); // JSON-safe tool inputs required.
+  const snapshot = JSON.parse(serialized) as z.infer<typeof Context>;
+  return { state: "pending", request: { requestId: randomUUID(),
+    actionDigest: createHash("sha256").update(serialized).digest("hex"), context: snapshot } };
+}
+export type Query = (request: PolicyRequest, signal: AbortSignal) => Promise<unknown>;
+// This is our normalized adapter contract, not native OPA/Cedar response JSON.
+// Configure a reviewed HTTPS policy gateway and authentication outside the model.
+// Replace the reserved example URL only in operator-controlled configuration.
+export function policyGateway(bearerToken: string, fetcher: typeof fetch = fetch): Query {
+  if (!bearerToken.trim()) throw new Error("Missing policy credential");
+  return async (request, signal) => {
+    const response = await fetcher("https://policy.example.invalid/v1/evaluate", {
+      method: "POST", redirect: "error", signal,
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearerToken}` },
+      body: JSON.stringify(request)
+    });
+    if (!response.ok || !response.body) throw new Error("Policy HTTP error");
+    const reader = response.body.getReader();
+    let size = 0; const chunks: Uint8Array[] = [];
+    try {
+      while (true) {
+        const part = await reader.read();
+        if (part.done) break;
+        size += part.value.byteLength;
+        if (size > 32768) { await reader.cancel(); throw new Error("Policy response too large"); }
+        chunks.push(part.value);
+      }
+    } finally { reader.releaseLock(); }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  };
+}
+export async function evaluate(record: Record, query: Query, now = Date.now,
+  timeoutMs = 3000): Promise<Decision> {
+  if (record.state !== "pending") throw new Error("Already claimed");
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10000) throw new Error("Invalid timeout");
+  record.state = "evaluating";
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { controller.abort(); reject(new Error("Policy timeout")); }, timeoutMs);
+    });
+    const raw = await Promise.race([query(structuredClone(record.request), controller.signal), timeout]);
+    const response = PolicyResponse.parse(raw);
+    if (response.requestId !== record.request.requestId ||
+        response.actionDigest !== record.request.actionDigest || response.expiresAt <= now())
+      throw new Error("Mismatched or expired decision");
+    record.decision = { allowed: response.allowed, reason: response.reason,
+      policyVersion: response.policyVersion, source: "policy",
+      expiresAt: Math.min(response.expiresAt, now() + 30000) };
+  } catch {
+    record.decision = { allowed: false, reason: "Policy evaluation unavailable or invalid",
+      policyVersion: "unavailable", source: "policy_error", expiresAt: now() + 30000 };
+  } finally { clearTimeout(timer); }
+  record.state = "decided";
+  return record.decision;
+}
+export async function deliver(client: Anthropic, record: Record,
+  currentPendingAndAuthorized: (request: PolicyRequest) => Promise<boolean>, now = Date.now) {
+  if (record.state !== "decided" || !record.decision) throw new Error("No unsent decision");
+  record.state = "sending"; // Claim before any await.
+  try {
+    const current = await currentPendingAndAuthorized(structuredClone(record.request));
+    if (!current || record.decision.expiresAt <= now()) {
+      record.state = "stale";
+      throw new Error("Action or authorization changed; do not grant permission");
+    }
+    const result = record.decision.allowed ? "allow" : "deny";
+    const receipt = await client.beta.sessions.events.send(record.request.context.sessionId, {
+      events: [{ type: "user.tool_confirmation", tool_use_id: record.request.context.eventId,
+        result, ...(result === "deny" ? { deny_message: "Denied by the external policy gate." } : {}) }]
+    }, { maxRetries: 0, timeout: 10000 });
+    record.state = "acknowledged";
+    return receipt;
+  } catch (error) {
+    if (record.state !== "stale") record.state = "uncertain";
+    throw error; // Never send an opposite decision after an uncertain confirmation.
+  }
+}
+// In-process records illustrate transitions. Production requires a durable
+// UNIQUE(sessionId,eventId) record, atomic claims, an outbox and reconciliation.
+// Protect record contents from mutation; verify action/resource binding again
+// before dispatch. Do not log credentials or send raw internal policy reasons
+// to untrusted model context. Acknowledgement is not proof of tool success.
+// This evaluates only calls gated before execution, not every agent action.

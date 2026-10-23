@@ -1,0 +1,29 @@
+{
+  "source": "live-provider-commentary",
+  "sessionId": "sesn_01TPYk2HL1VMEqpoLdTqX5v3",
+  "answer": "This is a local teaching experiment illustrating how an **External Policy Decision Service** pattern works: a policy engine evaluates a scoped action request and returns an allow/deny decision bound to a specific action digest. The key steps involve capturing the principal and action context, cryptographically binding the decision to that exact digest, and rechecking state before dispatch. Notably, the evidence shows `providerConfirmation: \"not sent\"`, meaning this is strictly a local simulation with no actual external service contacted.",
+  "stopReason": "end_turn",
+  "eventTypes": [
+    "session.status_running",
+    "session.thread_status_running",
+    "user.message",
+    "span.model_request_start",
+    "agent.thinking",
+    "agent.message",
+    "span.model_request_end",
+    "session.thread_status_idle",
+    "session.usage",
+    "session.status_idle"
+  ],
+  "requestUsage": [
+    {
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "input_tokens": 634,
+      "output_tokens": 140,
+      "speed": "standard"
+    }
+  ],
+  "experimentHash": "b580eb5d156b10ad92c2b8ae0f3c8763389b5411031f81bc2fc6307a7a5d0a0d",
+  "scope": "A real text-only model response about the local experiment. External integrations and the experiment's correctness are not certified by this response."
+}

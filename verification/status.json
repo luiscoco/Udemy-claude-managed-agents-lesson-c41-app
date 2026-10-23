@@ -1,0 +1,13 @@
+{
+  "lesson": "C41",
+  "title": "External Policy Decision Services",
+  "path": "lesson-c41\\lesson-c41-app",
+  "port": 3041,
+  "scenarios": 3,
+  "state": "implemented and verified",
+  "liveScope": "text-only commentary about the local result",
+  "typecheck": true,
+  "localTests": true,
+  "browserSmoke": "passed: desktop, mobile, scenario controls, source view",
+  "liveCommentarySmoke": "passed: real text-only session reached end_turn"
+}
